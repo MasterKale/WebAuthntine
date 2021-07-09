@@ -1,13 +1,11 @@
 import base64url from 'base64url';
 
-import verifyAttestationResponse from './verifyAttestationResponse';
+import verifyAttestationResponse, { defaultFormatVerifiers } from './verifyAttestationResponse';
 
 import * as decodeAttestationObject from '../helpers/decodeAttestationObject';
 import * as decodeClientDataJSON from '../helpers/decodeClientDataJSON';
 import * as parseAuthenticatorData from '../helpers/parseAuthenticatorData';
 import * as decodeCredentialPublicKey from '../helpers/decodeCredentialPublicKey';
-
-import * as verifyFIDOU2F from './verifications/verifyFIDOU2F';
 
 import toHash from '../helpers/toHash';
 import { AttestationCredentialJSON } from '@simplewebauthn/typescript-types';
@@ -23,7 +21,10 @@ beforeEach(() => {
   mockDecodeClientData = jest.spyOn(decodeClientDataJSON, 'default');
   mockParseAuthData = jest.spyOn(parseAuthenticatorData, 'default');
   mockDecodePubKey = jest.spyOn(decodeCredentialPublicKey, 'default');
-  mockVerifyFIDOU2F = jest.spyOn(verifyFIDOU2F, 'default');
+  mockVerifyFIDOU2F = jest.spyOn(
+    defaultFormatVerifiers,
+    decodeAttestationObject.ATTESTATION_FORMAT.FIDO_U2F,
+  );
 });
 
 afterEach(() => {

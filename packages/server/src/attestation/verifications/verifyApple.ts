@@ -14,68 +14,79 @@ type Options = {
   credentialPublicKey: Buffer;
 };
 
-export default async function verifyApple(options: Options): Promise<boolean> {
-  const { attStmt, authData, clientDataHash, credentialPublicKey } = options;
-  const { x5c } = attStmt;
+type AppleVerifierCtorOpts = {
+  rootCertificate: string;
+};
 
-  if (!x5c) {
-    throw new Error('No attestation certificate provided in attestation statement (Apple)');
+export class AppleVerifier {
+  rootCertificate: string;
+  constructor(options: AppleVerifierCtorOpts) {
+    this.rootCertificate = options.rootCertificate;
   }
 
-  /**
-   * Verify certificate path
-   */
-  const certPath = x5c.map(convertX509CertToPEM);
-  certPath.push(AppleWebAuthnRootCertificate);
+  async verify(options: Options): Promise<boolean> {
+    const { attStmt, authData, clientDataHash, credentialPublicKey } = options;
+    const { x5c } = attStmt;
 
-  try {
-    await validateCertificatePath(certPath);
-  } catch (err) {
-    throw new Error(`${err.message} (Apple)`);
+    if (!x5c) {
+      throw new Error('No attestation certificate provided in attestation statement (Apple)');
+    }
+
+    /**
+     * Verify certificate path
+     */
+    const certPath = x5c.map(convertX509CertToPEM);
+    certPath.push(this.rootCertificate);
+
+    try {
+      await validateCertificatePath(certPath);
+    } catch (err) {
+      throw new Error(`${err.message} (Apple)`);
+    }
+
+    /**
+     * Compare nonce in certificate extension to computed nonce
+     */
+    const parsedCredCert = AsnParser.parse(x5c[0], Certificate);
+    const { extensions, subjectPublicKeyInfo } = parsedCredCert.tbsCertificate;
+
+    if (!extensions) {
+      throw new Error('credCert missing extensions (Apple)');
+    }
+
+    const extCertNonce = extensions.find(ext => ext.extnID === '1.2.840.113635.100.8.2');
+
+    if (!extCertNonce) {
+      throw new Error('credCert missing "1.2.840.113635.100.8.2" extension (Apple)');
+    }
+
+    const nonceToHash = Buffer.concat([authData, clientDataHash]);
+    const nonce = toHash(nonceToHash, 'SHA256');
+    /**
+     * Ignore the first six ASN.1 structure bytes that define the nonce as an OCTET STRING. Should
+     * trim off <Buffer 30 24 a1 22 04 20>
+     *
+     * TODO: Try and get @peculiar (GitHub) to add a schema for "1.2.840.113635.100.8.2" when we
+     * find out where it's defined (doesn't seem to be publicly documented at the moment...)
+     */
+    const extNonce = Buffer.from(extCertNonce.extnValue.buffer).slice(6);
+
+    if (!nonce.equals(extNonce)) {
+      throw new Error(`credCert nonce was not expected value (Apple)`);
+    }
+
+    /**
+     * Verify credential public key matches the Subject Public Key of credCert
+     */
+    const credPubKeyPKCS = convertCOSEtoPKCS(credentialPublicKey);
+    const credCertSubjectPublicKey = Buffer.from(subjectPublicKeyInfo.subjectPublicKey);
+
+    if (!credPubKeyPKCS.equals(credCertSubjectPublicKey)) {
+      throw new Error('Credential public key does not equal credCert public key (Apple)');
+    }
+
+    return true;
   }
-
-  /**
-   * Compare nonce in certificate extension to computed nonce
-   */
-  const parsedCredCert = AsnParser.parse(x5c[0], Certificate);
-  const { extensions, subjectPublicKeyInfo } = parsedCredCert.tbsCertificate;
-
-  if (!extensions) {
-    throw new Error('credCert missing extensions (Apple)');
-  }
-
-  const extCertNonce = extensions.find(ext => ext.extnID === '1.2.840.113635.100.8.2');
-
-  if (!extCertNonce) {
-    throw new Error('credCert missing "1.2.840.113635.100.8.2" extension (Apple)');
-  }
-
-  const nonceToHash = Buffer.concat([authData, clientDataHash]);
-  const nonce = toHash(nonceToHash, 'SHA256');
-  /**
-   * Ignore the first six ASN.1 structure bytes that define the nonce as an OCTET STRING. Should
-   * trim off <Buffer 30 24 a1 22 04 20>
-   *
-   * TODO: Try and get @peculiar (GitHub) to add a schema for "1.2.840.113635.100.8.2" when we
-   * find out where it's defined (doesn't seem to be publicly documented at the moment...)
-   */
-  const extNonce = Buffer.from(extCertNonce.extnValue.buffer).slice(6);
-
-  if (!nonce.equals(extNonce)) {
-    throw new Error(`credCert nonce was not expected value (Apple)`);
-  }
-
-  /**
-   * Verify credential public key matches the Subject Public Key of credCert
-   */
-  const credPubKeyPKCS = convertCOSEtoPKCS(credentialPublicKey);
-  const credCertSubjectPublicKey = Buffer.from(subjectPublicKeyInfo.subjectPublicKey);
-
-  if (!credPubKeyPKCS.equals(credCertSubjectPublicKey)) {
-    throw new Error('Credential public key does not equal credCert public key (Apple)');
-  }
-
-  return true;
 }
 
 /**
@@ -99,3 +110,6 @@ MGQCMFrZ+9DsJ1PW9hfNdBywZDsWDbWFp28it1d/5w2RPkRX3Bbn/UbDTNLx7Jr3
 jAGGiQIwHFj+dJZYUJR786osByBelJYsVZd2GbHQu209b5RCmGQ21gpSAk9QZW4B
 1bWeT0vT
 -----END CERTIFICATE-----`;
+
+const defaultVerifier = new AppleVerifier({ rootCertificate: AppleWebAuthnRootCertificate });
+export default defaultVerifier.verify.bind(defaultVerifier);
